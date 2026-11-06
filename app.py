@@ -5,17 +5,21 @@ import ssl
 from requests.adapters import HTTPAdapter
 from datetime import datetime, timedelta
 
-# ── ADAPTADOR SSL PARA CIFRADOS ANTIGUOS ──────────────────────────────────
+# ── CONFIGURACIÓN GLOBAL DE CIFRADOS (Capa 1) ─────────────────────────────
+# Fuerza a urllib3 a aceptar cifrados de nivel de seguridad bajo
+requests.packages.urllib3.util.ssl_.DEFAULT_CIPHERS = 'ALL:@SECLEVEL=1'
+
+# ── ADAPTADOR SSL PERSONALIZADO (Capa 2) ──────────────────────────────────
 class CustomSSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
-        # Crea un contexto SSL que acepta cifrados de nivel de seguridad bajo
         ssl_context = ssl.create_default_context()
-        ssl_context.set_ciphers('DEFAULT@SECLEVEL=0') 
+        # Permite cifrados aún más débiles (SECLEVEL=0) para servidores antiguos
+        ssl_context.set_ciphers('DEFAULT@SECLEVEL=0')
         ssl_context.check_hostname = False
         kwargs["ssl_context"] = ssl_context
         return super().init_poolmanager(*args, **kwargs)
-# ───────────────────────────────────────────────────────────────────────────
 
+# ── Configuración de la página ──────────────────────────────────────────────
 st.set_page_config(page_title="Consulta minimis - BDNS", page_icon="🔎", layout="wide")
 st.title("🔎 Consulta de ayudas de minimis (últimos 3 años)")
 st.markdown("Introduce el **CIF/NIF** de la empresa. La herramienta consultará la BDNS y mostrará las concesiones de **minimis** de los **últimos 3 años**.")
@@ -39,10 +43,10 @@ if st.button("Consultar", type="primary"):
 
         with st.spinner("Consultando la BDNS..."):
             try:
-                # Usamos una sesión y le montamos nuestro adaptador personalizado
                 session = requests.Session()
                 session.mount('https://', CustomSSLAdapter())
                 
+                # verify=False sigue siendo necesario para evitar problemas de certificado
                 response = session.get(url, params=params, verify=False, timeout=30)
                 response.raise_for_status()
                 data = response.json()
