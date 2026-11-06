@@ -1,24 +1,15 @@
 import streamlit as st
 import pandas as pd
+import requests
 from datetime import datetime, timedelta
-from bdns.fetch.client import BDNSClient
-import ssl
 import urllib3
 
-# ── PARCHE PARA EL ERROR SSL ───────────────────────────────────────────────
-# Desactiva la verificación de certificados para evitar el SSLError en Streamlit Cloud
-ssl._create_default_https_context = ssl._create_unverified_context
+# Desactiva las advertencias de SSL para mantener la consola limpia
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-# ───────────────────────────────────────────────────────────────────────────
 
-# ── Configuración de la página ──────────────────────────────────────────────
 st.set_page_config(page_title="Consulta minimis - BDNS", page_icon="🔎", layout="wide")
-
 st.title("🔎 Consulta de ayudas de minimis (últimos 3 años)")
-st.markdown(
-    "Introduce el **CIF/NIF** de la empresa. La herramienta consultará la BDNS "
-    "y mostrará las concesiones de **minimis** de los **últimos 3 años**."
-)
+st.markdown("Introduce el **CIF/NIF** de la empresa. La herramienta consultará la BDNS y mostrará las concesiones de **minimis** de los **últimos 3 años**.")
 
 cif = st.text_input("CIF / NIF (ej. B12345678)", max_chars=20).strip().upper()
 
@@ -28,27 +19,39 @@ if st.button("Consultar", type="primary"):
     else:
         fecha_hasta = datetime.now().date()
         fecha_desde = fecha_hasta - timedelta(days=3*365)
+        
+        # Endpoint oficial de búsqueda de concesiones
+        url = "https://www.infosubvenciones.es/bdnstrans/api/concesiones/busqueda"
+        
+        # Parámetros de la petición GET (formato de fecha aceptado por la API: dd/MM/yyyy)
+        params = {
+            "fechaDesde": fecha_desde.strftime("%d/%m/%Y"),
+            "fechaHasta": fecha_hasta.strftime("%d/%m/%Y"),
+            "pageSize": 1000,
+            "page": 0
+        }
 
-        with st.spinner("Descargando y filtrando datos de la BDNS..."):
+        with st.spinner("Consultando la BDNS..."):
             try:
-                client = BDNSClient()
-                
-                resultados = client.fetch_concesiones_busqueda(
-                    fechaDesde=fecha_desde,
-                    fechaHasta=fecha_hasta,
-                    pageSize=1000,
-                    num_pages=100 
-                )
+                # Petición con verify=False para evitar el SSLError de Streamlit Cloud
+                response = requests.get(url, params=params, verify=False, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+
+                # La API suele devolver un diccionario con la clave "content"
+                resultados = data.get("content", []) if isinstance(data, dict) else data
 
                 if not resultados:
                     st.info(f"No se han encontrado concesiones en el periodo para el CIF {cif}.")
                     st.stop()
 
                 df = pd.DataFrame(resultados)
+
+                # Filtramos por CIF en el cliente (por si la API no lo hace en el servidor)
                 col_cif = next((col for col in df.columns if 'nif' in col.lower() or 'beneficiario' in col.lower()), None)
                 
                 if col_cif:
-                    df_filtrado = df[df[col_cif].astype(str).str.upper() == cif].copy()
+                    df_filtrado = df[df[col_cif].astype(str).str.upper().str.contains(cif, na=False)].copy()
                 else:
                     st.error("No se ha podido identificar la columna del CIF en los datos descargados.")
                     st.stop()
@@ -56,6 +59,7 @@ if st.button("Consultar", type="primary"):
                 if df_filtrado.empty:
                     st.info(f"No se han encontrado ayudas de minimis para el CIF {cif} en los últimos 3 años.")
                 else:
+                    # Mapeo de columnas
                     mapeo = {
                         "fechaConcesion": "Fecha concesión",
                         "importeSubvencion": "SBE (€)",
