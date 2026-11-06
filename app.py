@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-import requests
 from datetime import datetime, timedelta
+from bdns.fetch.client import BDNSClient
 
 # ── Configuración de la página ──────────────────────────────────────────────
 st.set_page_config(page_title="Consulta minimis - BDNS", page_icon="🔎", layout="wide")
@@ -18,44 +18,48 @@ if st.button("Consultar", type="primary"):
     if not cif:
         st.warning("Por favor, introduce un CIF/NIF válido.")
     else:
-        # 1. Calcular fechas (últimos 3 años)
-        fecha_hasta = datetime.now()
+        # 1. Calcular fechas (últimos 3 años desde hoy)
+        fecha_hasta = datetime.now().date()
         fecha_desde = fecha_hasta - timedelta(days=3*365)
-        
-        # 2. Endpoint oficial de búsqueda de la BDNS
-        url = "https://www.infosubvenciones.es/bdnstrans/api/concesiones/busqueda"
-        
-        # 3. Configurar la petición
-        payload = {
-            "nif": cif,
-            "fechaDesde": fecha_desde.strftime("%Y-%m-%d"),
-            "fechaHasta": fecha_hasta.strftime("%Y-%m-%d"),
-            "page": 0,
-            "pageSize": 500
-        }
-        
-        with st.spinner("Consultando la BDNS..."):
+
+        with st.spinner("Descargando y filtrando datos de la BDNS (esto puede tardar unos segundos)..."):
             try:
-                # Hacemos la petición POST a la API
-                response = requests.post(url, json=payload, timeout=30)
-                response.raise_for_status()
-                data = response.json()
+                # 2. Conectar con la API de la BDNS usando la librería oficial
+                client = BDNSClient()
                 
-                # 4. Extraer los resultados dependiendo de cómo devuelva el JSON la API
-                if isinstance(data, dict) and "content" in data:
-                    resultados = data["content"]
-                elif isinstance(data, list):
-                    resultados = data
-                else:
-                    resultados = []
+                # 3. Descargar concesiones del periodo.
+                # Nota: Limitamos a 100 páginas de 1000 registros (100.000 concesiones) 
+                # para evitar bloqueos por exceso de datos. Si una empresa tiene muchísimas 
+                # ayudas, se podría ampliar este número.
+                resultados = client.fetch_concesiones_busqueda(
+                    fechaDesde=fecha_desde.strftime("%Y-%m-%d"),
+                    fechaHasta=fecha_hasta.strftime("%Y-%m-%d"),
+                    pageSize=1000,
+                    num_pages=100 
+                )
 
                 if not resultados:
+                    st.info(f"No se han encontrado concesiones en el periodo para el CIF {cif}.")
+                    st.stop()
+
+                # 4. Convertir a tabla
+                df = pd.DataFrame(resultados)
+
+                # 5. Filtrar por el CIF introducido (la API no lo hace en el servidor)
+                # Buscamos la columna que contiene el NIF del beneficiario.
+                col_cif = next((col for col in df.columns if 'nif' in col.lower() or 'beneficiario' in col.lower()), None)
+                
+                if col_cif:
+                    # Filtramos comparando el texto en mayúsculas
+                    df_filtrado = df[df[col_cif].astype(str).str.upper() == cif].copy()
+                else:
+                    st.error("No se ha podido identificar la columna del CIF en los datos descargados.")
+                    st.stop()
+
+                if df_filtrado.empty:
                     st.info(f"No se han encontrado ayudas de minimis para el CIF {cif} en los últimos 3 años.")
                 else:
-                    # 5. Convertir a tabla (DataFrame)
-                    df = pd.DataFrame(resultados)
-                    
-                    # 6. Mapear las columnas para que se vean bonitas
+                    # 6. Mapear y renombrar las columnas para que se vean claras
                     mapeo = {
                         "fechaConcesion": "Fecha concesión",
                         "importeSubvencion": "SBE (€)",
@@ -67,21 +71,23 @@ if st.button("Consultar", type="primary"):
                     }
                     
                     columnas_finales = {}
-                    for col in df.columns:
+                    for col in df_filtrado.columns:
                         for k, v in mapeo.items():
                             if k.lower() in col.lower():
                                 columnas_finales[col] = v
                                 break
                     
                     if columnas_finales:
-                        df_mostrar = df[list(columnas_finales.keys())].rename(columns=columnas_finales)
+                        df_mostrar = df_filtrado[list(columnas_finales.keys())].rename(columns=columnas_finales)
                     else:
-                        df_mostrar = df # Si no encuentra los nombres, muestra todo
+                        df_mostrar = df_filtrado # Si no encuentra los nombres exactos, muestra todo
 
                     st.success(f"Se han encontrado {len(df_mostrar)} ayudas para el CIF {cif}.")
-                    
-                    # 7. Mostrar tabla interactiva
                     st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
                     
+                    # Botón de descarga opcional
+                    csv = df_mostrar.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Descargar CSV", csv, f"minimis_{cif}.csv", "text/csv")
+
             except Exception as e:
                 st.error(f"Error al conectar con la BDNS: {e}")
