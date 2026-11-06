@@ -1,11 +1,20 @@
 import streamlit as st
 import pandas as pd
 import requests
+import ssl
+from requests.adapters import HTTPAdapter
 from datetime import datetime, timedelta
-import urllib3
 
-# Desactiva las advertencias de SSL para mantener la consola limpia
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# ── ADAPTADOR SSL PARA CIFRADOS ANTIGUOS ──────────────────────────────────
+class CustomSSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        # Crea un contexto SSL que acepta cifrados de nivel de seguridad bajo
+        ssl_context = ssl.create_default_context()
+        ssl_context.set_ciphers('DEFAULT@SECLEVEL=0') 
+        ssl_context.check_hostname = False
+        kwargs["ssl_context"] = ssl_context
+        return super().init_poolmanager(*args, **kwargs)
+# ───────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="Consulta minimis - BDNS", page_icon="🔎", layout="wide")
 st.title("🔎 Consulta de ayudas de minimis (últimos 3 años)")
@@ -20,10 +29,7 @@ if st.button("Consultar", type="primary"):
         fecha_hasta = datetime.now().date()
         fecha_desde = fecha_hasta - timedelta(days=3*365)
         
-        # Endpoint oficial de búsqueda de concesiones
         url = "https://www.infosubvenciones.es/bdnstrans/api/concesiones/busqueda"
-        
-        # Parámetros de la petición GET (formato de fecha aceptado por la API: dd/MM/yyyy)
         params = {
             "fechaDesde": fecha_desde.strftime("%d/%m/%Y"),
             "fechaHasta": fecha_hasta.strftime("%d/%m/%Y"),
@@ -33,12 +39,14 @@ if st.button("Consultar", type="primary"):
 
         with st.spinner("Consultando la BDNS..."):
             try:
-                # Petición con verify=False para evitar el SSLError de Streamlit Cloud
-                response = requests.get(url, params=params, verify=False, timeout=30)
+                # Usamos una sesión y le montamos nuestro adaptador personalizado
+                session = requests.Session()
+                session.mount('https://', CustomSSLAdapter())
+                
+                response = session.get(url, params=params, verify=False, timeout=30)
                 response.raise_for_status()
                 data = response.json()
 
-                # La API suele devolver un diccionario con la clave "content"
                 resultados = data.get("content", []) if isinstance(data, dict) else data
 
                 if not resultados:
@@ -46,8 +54,6 @@ if st.button("Consultar", type="primary"):
                     st.stop()
 
                 df = pd.DataFrame(resultados)
-
-                # Filtramos por CIF en el cliente (por si la API no lo hace en el servidor)
                 col_cif = next((col for col in df.columns if 'nif' in col.lower() or 'beneficiario' in col.lower()), None)
                 
                 if col_cif:
@@ -59,7 +65,6 @@ if st.button("Consultar", type="primary"):
                 if df_filtrado.empty:
                     st.info(f"No se han encontrado ayudas de minimis para el CIF {cif} en los últimos 3 años.")
                 else:
-                    # Mapeo de columnas
                     mapeo = {
                         "fechaConcesion": "Fecha concesión",
                         "importeSubvencion": "SBE (€)",
