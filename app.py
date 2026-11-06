@@ -2,6 +2,14 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from bdns.fetch.client import BDNSClient
+import ssl
+import urllib3
+
+# ── PARCHE PARA EL ERROR SSL ───────────────────────────────────────────────
+# Desactiva la verificación de certificados para evitar el SSLError en Streamlit Cloud
+ssl._create_default_https_context = ssl._create_unverified_context
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# ───────────────────────────────────────────────────────────────────────────
 
 # ── Configuración de la página ──────────────────────────────────────────────
 st.set_page_config(page_title="Consulta minimis - BDNS", page_icon="🔎", layout="wide")
@@ -18,7 +26,6 @@ if st.button("Consultar", type="primary"):
     if not cif:
         st.warning("Por favor, introduce un CIF/NIF válido.")
     else:
-        # 1. Calcular fechas (últimos 3 años desde hoy) como objetos date
         fecha_hasta = datetime.now().date()
         fecha_desde = fecha_hasta - timedelta(days=3*365)
 
@@ -26,7 +33,6 @@ if st.button("Consultar", type="primary"):
             try:
                 client = BDNSClient()
                 
-                # 2. Se pasan los objetos date DIRECTAMENTE (sin strftime)
                 resultados = client.fetch_concesiones_busqueda(
                     fechaDesde=fecha_desde,
                     fechaHasta=fecha_hasta,
@@ -39,8 +45,6 @@ if st.button("Consultar", type="primary"):
                     st.stop()
 
                 df = pd.DataFrame(resultados)
-
-                # 3. Filtramos por CIF en el cliente
                 col_cif = next((col for col in df.columns if 'nif' in col.lower() or 'beneficiario' in col.lower()), None)
                 
                 if col_cif:
@@ -52,7 +56,6 @@ if st.button("Consultar", type="primary"):
                 if df_filtrado.empty:
                     st.info(f"No se han encontrado ayudas de minimis para el CIF {cif} en los últimos 3 años.")
                 else:
-                    # 4. Mapeo de columnas
                     mapeo = {
                         "fechaConcesion": "Fecha concesión",
                         "importeSubvencion": "SBE (€)",
